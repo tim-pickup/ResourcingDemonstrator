@@ -8,7 +8,7 @@ import { AppProvider } from './context/AppContext';
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <FluentProvider theme={webLightTheme}>
-      <BrowserRouter basename="/resourcingdemonstrator">
+      <BrowserRouter basename="/ResourcingDemonstrator">
         <AppProvider>
           <App />
         </AppProvider>
