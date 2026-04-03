@@ -13,7 +13,7 @@ import {
   Tooltip,
   tokens,
 } from '@fluentui/react-components';
-import { DemandLine, WorkflowStage } from '../types';
+import { DemandLine, UserRole, WorkflowStage } from '../types';
 import { useAppContext } from '../context/AppContext';
 import { getSkillById, getThemeForSkill } from '../utils/taxonomy';
 import { GapIndicator } from './GapIndicator';
@@ -159,7 +159,11 @@ export function DemandTable({
 
               {/* Action */}
               <TableCell>
-                {projectStage === WorkflowStage.Approved && onAllocate ? (
+                {projectStage === WorkflowStage.Approved &&
+                 state.currentRole === UserRole.PMO &&
+                 !dl.assignedTeamMemberId &&
+                 !dl.isGap &&
+                 onAllocate ? (
                   <Button
                     size="small"
                     appearance="primary"

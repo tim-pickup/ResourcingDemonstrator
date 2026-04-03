@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useReducer } from 'react';
-import { Project, TeamMember, UserRole, WorkflowStage } from '../types';
+import { Project, TeamMember, UserRole, WorkflowStage, Workstream, DemandLine } from '../types';
 import { PROJECTS } from '../data/projects';
 import { TEAM_MEMBERS } from '../data/team';
 
@@ -15,15 +15,23 @@ type AppAction =
   | { type: 'APPROVE_PROJECT'; projectId: string }
   | { type: 'REJECT_PROJECT'; projectId: string; reason: string }
   | { type: 'ALLOCATE_DEMAND_LINE'; projectId: string; workstreamId: string; demandLineId: string; teamMemberId: string }
-  | { type: 'FLAG_GAP'; projectId: string; workstreamId: string; demandLineId: string };
+  | { type: 'FLAG_GAP'; projectId: string; workstreamId: string; demandLineId: string }
+  | { type: 'CREATE_PROJECT'; project: Project }
+  | { type: 'ADD_WORKSTREAM'; projectId: string; workstream: Workstream }
+  | { type: 'ADD_DEMAND_LINE'; projectId: string; workstreamId: string; demandLine: DemandLine }
+  | { type: 'REMOVE_DEMAND_LINE'; projectId: string; workstreamId: string; demandLineId: string };
 
 function isProjectFullyResolved(project: Project): boolean {
+  if (project.workstreams.length === 0) return false;
   for (const ws of project.workstreams) {
+    if (ws.demandLines.length === 0) continue;
     for (const dl of ws.demandLines) {
       if (!dl.assignedTeamMemberId && !dl.isGap) return false;
     }
   }
-  return true;
+  // At least one demand line must exist to auto-transition
+  const totalDemandLines = project.workstreams.reduce((sum, ws) => sum + ws.demandLines.length, 0);
+  return totalDemandLines > 0;
 }
 
 function reducer(state: AppState, action: AppAction): AppState {
@@ -103,6 +111,51 @@ function reducer(state: AppState, action: AppAction): AppState {
       return { ...state, projects };
     }
 
+    case 'CREATE_PROJECT':
+      return { ...state, projects: [...state.projects, action.project] };
+
+    case 'ADD_WORKSTREAM':
+      return {
+        ...state,
+        projects: state.projects.map((p) =>
+          p.id === action.projectId
+            ? { ...p, workstreams: [...p.workstreams, action.workstream] }
+            : p
+        ),
+      };
+
+    case 'ADD_DEMAND_LINE':
+      return {
+        ...state,
+        projects: state.projects.map((p) => {
+          if (p.id !== action.projectId) return p;
+          return {
+            ...p,
+            workstreams: p.workstreams.map((ws) =>
+              ws.id !== action.workstreamId
+                ? ws
+                : { ...ws, demandLines: [...ws.demandLines, action.demandLine] }
+            ),
+          };
+        }),
+      };
+
+    case 'REMOVE_DEMAND_LINE':
+      return {
+        ...state,
+        projects: state.projects.map((p) => {
+          if (p.id !== action.projectId) return p;
+          return {
+            ...p,
+            workstreams: p.workstreams.map((ws) =>
+              ws.id !== action.workstreamId
+                ? ws
+                : { ...ws, demandLines: ws.demandLines.filter((dl) => dl.id !== action.demandLineId) }
+            ),
+          };
+        }),
+      };
+
     default:
       return state;
   }
@@ -111,7 +164,7 @@ function reducer(state: AppState, action: AppAction): AppState {
 const initialState: AppState = {
   projects: PROJECTS,
   teamMembers: TEAM_MEMBERS,
-  currentRole: UserRole.PortfolioViewer,
+  currentRole: UserRole.ProjectLead,
 };
 
 interface AppContextValue {

@@ -1,9 +1,8 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
 import {
+  Button,
   Divider,
-  Dropdown,
-  Option,
   Text,
   tokens,
 } from '@fluentui/react-components';
@@ -101,6 +100,9 @@ export function Sidebar() {
         <NavItem to="/team" icon={<PeopleFilled />} label="Team" />
       </nav>
 
+      {/* Spacer to push role block to the bottom */}
+      <div style={{ flex: 1 }} />
+
       <Divider />
 
       {/* Role selector */}
@@ -113,25 +115,25 @@ export function Sidebar() {
         }}
       >
         <Text
-          size={200}
-          weight="semibold"
+          size={100}
           style={{ color: tokens.colorNeutralForeground3 }}
         >
           Viewing as
         </Text>
-        <Dropdown
-          value={state.currentRole}
-          onOptionSelect={(_e, data) =>
-            dispatch({ type: 'SET_ROLE', role: data.optionValue as UserRole })
-          }
-          style={{ width: '100%' }}
-        >
-          {Object.values(UserRole).map((r) => (
-            <Option key={r} value={r}>
-              {r}
-            </Option>
-          ))}
-        </Dropdown>
+        {Object.values(UserRole).map((role) => (
+          <Button
+            key={role}
+            appearance={state.currentRole === role ? 'primary' : 'subtle'}
+            style={
+              state.currentRole === role
+                ? undefined
+                : { justifyContent: 'flex-start', width: '100%' }
+            }
+            onClick={() => dispatch({ type: 'SET_ROLE', role })}
+          >
+            {role}
+          </Button>
+        ))}
       </div>
     </aside>
   );

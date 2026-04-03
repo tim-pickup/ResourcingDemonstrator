@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from 'react';
+import { useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Card,
   Dropdown,
@@ -13,6 +14,7 @@ import {
   MessageBarBody,
   Text,
   Badge,
+  Button,
   tokens,
 } from '@fluentui/react-components';
 import {
@@ -24,330 +26,360 @@ import {
   Tooltip as RechartsTooltip,
   Legend,
   ReferenceLine,
-  PieChart,
-  Pie,
-  Cell,
+  ResponsiveContainer,
 } from 'recharts';
 import { useAppContext } from '../context/AppContext';
-import { getAllDemandLines, getAllocatedFTE } from '../utils/allocation';
-import { getSkillById, getThemeForSkill } from '../utils/taxonomy';
+import { getAllDemandLines, getAllocatedFTE, isQuarterInRange } from '../utils/allocation';
+import { getSkillById } from '../utils/taxonomy';
 import { THEMES } from '../data/taxonomy';
 import { QUARTER_ORDER, WorkflowStage, FundingSource } from '../types';
 
-// Stable color array for team members in stacked bar chart (12 members)
+const ACTIVE_STAGES = [WorkflowStage.Approved, WorkflowStage.Allocated];
+
 const MEMBER_COLORS = [
   '#0078d4', '#107c10', '#d83b01', '#8a2be2', '#008272',
   '#ca5010', '#004b50', '#6b69d6', '#038387', '#b4009e',
   '#e3008c', '#004e8c',
 ];
 
-// Active project stages for demand calculations
-const ACTIVE_STAGES: WorkflowStage[] = [WorkflowStage.Approved, WorkflowStage.Allocated];
+function KpiCard({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
+  return (
+    <Card style={{ padding: '20px 24px', flex: 1, minWidth: 160 }}>
+      <Text size={200} style={{ color: tokens.colorNeutralForeground3, display: 'block', marginBottom: 4 }}>
+        {label}
+      </Text>
+      <Text size={700} weight="bold" style={{ color: color ?? tokens.colorNeutralForeground1, display: 'block', lineHeight: 1.1 }}>
+        {value}
+      </Text>
+      {sub && (
+        <Text size={200} style={{ color: tokens.colorNeutralForeground3, display: 'block', marginTop: 4 }}>
+          {sub}
+        </Text>
+      )}
+    </Card>
+  );
+}
 
-// Cell background color for the skills heatmap
-function heatmapCellStyle(fte: number): React.CSSProperties {
-  if (fte <= 0) return { backgroundColor: '#ffffff' };
-  if (fte <= 0.5) return { backgroundColor: '#ddeeff' };
-  if (fte <= 1.0) return { backgroundColor: '#aaccff' };
-  return { backgroundColor: '#5599dd', color: '#ffffff' };
+function WidgetCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <Card style={{ padding: '20px', overflow: 'hidden' }}>
+      <Text size={400} weight="semibold" style={{ display: 'block', marginBottom: 16 }}>
+        {title}
+      </Text>
+      {children}
+    </Card>
+  );
+}
+
+function heatmapBg(fte: number): string {
+  if (fte <= 0) return tokens.colorNeutralBackground1;
+  if (fte <= 0.5) return '#dbeeff';
+  if (fte <= 1.0) return '#9ac5f5';
+  return '#0078d4';
 }
 
 export default function Dashboard() {
   const { state } = useAppContext();
-  const [themeFilter, setThemeFilter] = useState<string>('All');
+  const navigate = useNavigate();
+  const [themeFilter, setThemeFilter] = useState('All');
 
-  // Demand lines for approved+allocated projects only
   const activeDemandLines = useMemo(
     () => getAllDemandLines(state.projects, ACTIVE_STAGES),
     [state.projects]
   );
 
-  // All demand lines across all stages (for gaps — gaps can be flagged on any project)
-  const allDemandLines = useMemo(
-    () => getAllDemandLines(state.projects),
+  const allDemandLines = useMemo(() => getAllDemandLines(state.projects), [state.projects]);
+
+  const filteredSkills = useMemo(() => {
+    if (themeFilter === 'All') return THEMES.flatMap((t) => t.skills);
+    const t = THEMES.find((th) => th.shortName === themeFilter || th.id === themeFilter);
+    return t ? t.skills : [];
+  }, [themeFilter]);
+
+  // ── KPI 1: Active Demand ──────────────────────────────────────────────────
+  const activeDemandFte = useMemo(
+    () => activeDemandLines.reduce((s, dl) => s + dl.fte, 0),
+    [activeDemandLines]
+  );
+
+  // ── KPI 2: Allocated FTE ─────────────────────────────────────────────────
+  const allocatedFte = useMemo(
+    () => activeDemandLines.filter((dl) => !!dl.assignedTeamMemberId).reduce((s, dl) => s + dl.fte, 0),
+    [activeDemandLines]
+  );
+  const allocatedPct = activeDemandFte > 0 ? Math.round((allocatedFte / activeDemandFte) * 100) : 0;
+
+  // ── KPI 3: Needs Allocation (Approved, unassigned, not gap) ──────────────
+  const needsAllocationLines = useMemo(
+    () =>
+      getAllDemandLines(state.projects, [WorkflowStage.Approved]).filter(
+        (dl) => !dl.assignedTeamMemberId && !dl.isGap
+      ),
     [state.projects]
   );
 
-  // Skills filtered by selected theme
-  const filteredSkills = useMemo(() => {
-    if (themeFilter === 'All') return THEMES.flatMap((t) => t.skills);
-    const theme = THEMES.find((t) => t.shortName === themeFilter || t.id === themeFilter);
-    return theme ? theme.skills : [];
-  }, [themeFilter]);
+  // ── KPI 4: Over-capacity member×quarter pairs ─────────────────────────────
+  const overCapacityCount = useMemo(() => {
+    let count = 0;
+    for (const m of state.teamMembers) {
+      for (const q of QUARTER_ORDER) {
+        if (getAllocatedFTE(m.id, q, state.projects) >= 1.0) count++;
+      }
+    }
+    return count;
+  }, [state.teamMembers, state.projects]);
 
-  // ── Widget 1: Demand vs Supply by Skill ─────────────────────────────────────
+  // ── Widget 1: Demand vs Supply ────────────────────────────────────────────
   const demandSupplyData = useMemo(() => {
-    return filteredSkills.map((skill) => {
-      // Total demand FTE from approved+allocated projects for this skill
-      const demandFte = activeDemandLines
-        .filter((dl) => dl.skillId === skill.id)
-        .reduce((sum, dl) => sum + dl.fte, 0);
+    return filteredSkills
+      .map((skill) => {
+        const demand = activeDemandLines
+          .filter((dl) => dl.skillId === skill.id)
+          .reduce((s, dl) => s + dl.fte, 0);
 
-      // Supply: each team member with the skill contributes (1.0 - average allocated FTE)
-      const membersWithSkill = state.teamMembers.filter((m) =>
-        m.skills.some((s) => s.skillId === skill.id)
-      );
-      const supplyFte = membersWithSkill.reduce((sum, member) => {
-        const avgAllocated =
-          QUARTER_ORDER.reduce(
-            (acc, q) => acc + getAllocatedFTE(member.id, q, state.projects),
-            0
-          ) / QUARTER_ORDER.length;
-        return sum + Math.max(0, 1.0 - avgAllocated);
-      }, 0);
+        const supply = state.teamMembers
+          .filter((m) => m.skills.some((s) => s.skillId === skill.id))
+          .reduce((sum, member) => {
+            const maxAlloc = Math.max(
+              ...QUARTER_ORDER.map((q) => getAllocatedFTE(member.id, q, state.projects))
+            );
+            return sum + Math.max(0, 1.0 - maxAlloc);
+          }, 0);
 
-      return {
-        skill: skill.id,
-        demand: Math.round(demandFte * 100) / 100,
-        supply: Math.round(supplyFte * 100) / 100,
-      };
-    });
+        return {
+          skill: skill.id,
+          demand: Math.round(demand * 100) / 100,
+          supply: Math.round(supply * 100) / 100,
+        };
+      })
+      .filter((d) => d.demand > 0 || d.supply > 0);
   }, [filteredSkills, activeDemandLines, state.teamMembers, state.projects]);
 
-  // ── Widget 2: Team Load by Quarter ──────────────────────────────────────────
+  // ── Widget 2: Team Load by Quarter ────────────────────────────────────────
   const teamLoadData = useMemo(() => {
     return QUARTER_ORDER.map((quarter) => {
       const entry: Record<string, number | string> = { quarter };
-      state.teamMembers.forEach((member) => {
-        entry[member.id] = Math.round(getAllocatedFTE(member.id, quarter, state.projects) * 100) / 100;
+      state.teamMembers.forEach((m) => {
+        const fte = getAllocatedFTE(m.id, quarter, state.projects);
+        if (fte > 0) entry[m.name] = Math.round(fte * 100) / 100;
       });
       return entry;
     });
   }, [state.teamMembers, state.projects]);
 
-  // ── Widget 3: Gaps Summary ───────────────────────────────────────────────────
-  const gapLines = useMemo(
-    () => allDemandLines.filter((dl) => dl.isGap === true),
-    [allDemandLines]
-  );
+  const allocatedMemberNames = useMemo(() => {
+    const names = new Set<string>();
+    state.projects.forEach((p) =>
+      p.workstreams.forEach((ws) =>
+        ws.demandLines.forEach((dl) => {
+          if (dl.assignedTeamMemberId) {
+            const m = state.teamMembers.find((tm) => tm.id === dl.assignedTeamMemberId);
+            if (m) names.add(m.name);
+          }
+        })
+      )
+    );
+    return Array.from(names);
+  }, [state.projects, state.teamMembers]);
 
-  // ── Widget 4: Skills Heatmap ─────────────────────────────────────────────────
-  const heatmapData = useMemo(() => {
-    return filteredSkills.map((skill) => {
-      const row: Record<string, number | string> = { skillId: skill.id, skillName: skill.name };
-      QUARTER_ORDER.forEach((q) => {
-        const qi = QUARTER_ORDER.indexOf(q);
-        const totalFte = activeDemandLines
+  // ── Widget 3: Resource Contention ─────────────────────────────────────────
+  const contentionData = useMemo(() => {
+    const rows: { skill: string; skillName: string; quarter: string; demand: number; supply: number; shortfall: number }[] = [];
+    for (const skill of filteredSkills) {
+      for (const quarter of QUARTER_ORDER) {
+        const qi = QUARTER_ORDER.indexOf(quarter);
+        const demand = activeDemandLines
           .filter((dl) => {
             if (dl.skillId !== skill.id) return false;
             const si = QUARTER_ORDER.indexOf(dl.startQuarter);
             const ei = QUARTER_ORDER.indexOf(dl.endQuarter);
             return qi >= si && qi <= ei;
           })
-          .reduce((sum, dl) => sum + dl.fte, 0);
-        row[q] = Math.round(totalFte * 100) / 100;
-      });
-      return row;
-    });
+          .reduce((s, dl) => s + dl.fte, 0);
+
+        if (demand === 0) continue;
+
+        const supply = state.teamMembers
+          .filter((m) => m.skills.some((s) => s.skillId === skill.id))
+          .reduce((sum, m) => {
+            const alloc = getAllocatedFTE(m.id, quarter, state.projects);
+            return sum + Math.max(0, 1.0 - alloc);
+          }, 0);
+
+        const shortfall = Math.round((demand - supply) * 100) / 100;
+        if (shortfall > 0) {
+          rows.push({
+            skill: skill.id,
+            skillName: skill.name,
+            quarter,
+            demand: Math.round(demand * 100) / 100,
+            supply: Math.round(supply * 100) / 100,
+            shortfall,
+          });
+        }
+      }
+    }
+    return rows.sort((a, b) => b.shortfall - a.shortfall);
+  }, [filteredSkills, activeDemandLines, state.teamMembers, state.projects]);
+
+  // ── Widget 4: Skills Heatmap ──────────────────────────────────────────────
+  const heatmapData = useMemo(() => {
+    return filteredSkills
+      .map((skill) => {
+        const row: Record<string, number | string> = { skillId: skill.id };
+        let total = 0;
+        QUARTER_ORDER.forEach((q) => {
+          const qi = QUARTER_ORDER.indexOf(q);
+          const fte = activeDemandLines
+            .filter((dl) => {
+              if (dl.skillId !== skill.id) return false;
+              const si = QUARTER_ORDER.indexOf(dl.startQuarter);
+              const ei = QUARTER_ORDER.indexOf(dl.endQuarter);
+              return qi >= si && qi <= ei;
+            })
+            .reduce((s, dl) => s + dl.fte, 0);
+          const rounded = Math.round(fte * 100) / 100;
+          row[q] = rounded;
+          total += rounded;
+        });
+        row['total'] = Math.round(total * 100) / 100;
+        return row;
+      })
+      .filter((row) => (row['total'] as number) > 0);
   }, [filteredSkills, activeDemandLines]);
 
-  // ── Widget 5: Funding Source Breakdown ───────────────────────────────────────
-  const fundingData = useMemo(() => {
-    const totals: Record<string, number> = {
-      [FundingSource.Sector]: 0,
-      [FundingSource.Project]: 0,
-    };
-    for (const dl of activeDemandLines) {
-      totals[dl.fundingSource] = (totals[dl.fundingSource] ?? 0) + dl.fte;
-    }
-    return [FundingSource.Sector, FundingSource.Project]
-      .map((name) => ({ name, value: Math.round((totals[name] ?? 0) * 100) / 100 }))
-      .filter((d) => d.value > 0);
-  }, [activeDemandLines]);
-
-  const fundingColors: Record<string, string> = {
-    [FundingSource.Sector]: '#0078d4',
-    [FundingSource.Project]: '#8a2be2',
-  };
-
   return (
-    <div style={{ padding: tokens.spacingVerticalL, display: 'flex', flexDirection: 'column', gap: tokens.spacingVerticalL }}>
-      {/* Header + theme filter */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          flexWrap: 'wrap',
-          gap: tokens.spacingHorizontalM,
-        }}
-      >
-        <Text size={700} weight="bold">Dashboard</Text>
-        <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalS }}>
-          <Text size={300}>Theme:</Text>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+        <Text size={700} weight="bold">Portfolio Dashboard</Text>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Text size={300} style={{ color: tokens.colorNeutralForeground3 }}>Theme:</Text>
           <Dropdown
             value={themeFilter}
             selectedOptions={[themeFilter]}
             onOptionSelect={(_e, data) => setThemeFilter(data.optionValue ?? 'All')}
-            style={{ minWidth: 160 }}
+            style={{ minWidth: 140 }}
           >
-            <Option value="All">All</Option>
+            <Option value="All">All Themes</Option>
             {THEMES.map((t) => (
-              <Option key={t.id} value={t.shortName} text={t.shortName}>
-                {t.shortName}
-              </Option>
+              <Option key={t.id} value={t.shortName} text={t.shortName}>{t.shortName} — {t.name}</Option>
             ))}
           </Dropdown>
         </div>
       </div>
 
-      {/* Widget grid — 2 columns on wide screens */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(2, 1fr)',
-          gap: '16px',
-        }}
-      >
-        {/* ── Widget 1: Demand vs Supply by Skill ── */}
-        <Card style={{ padding: tokens.spacingVerticalM, overflow: 'hidden' }}>
-          <Text size={500} weight="semibold" style={{ display: 'block', marginBottom: tokens.spacingVerticalS }}>
-            Demand vs Supply by Skill
-          </Text>
-          {demandSupplyData.length === 0 ? (
-            <Text style={{ color: tokens.colorNeutralForeground3 }}>No skills to display.</Text>
-          ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <BarChart
-                width={Math.max(400, demandSupplyData.length * 64 + 80)}
-                height={280}
-                data={demandSupplyData}
-                margin={{ top: 8, right: 16, left: 0, bottom: 56 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis
-                  dataKey="skill"
-                  tick={{ fontSize: 10 }}
-                  angle={-40}
-                  textAnchor="end"
-                  interval={0}
-                />
-                <YAxis
-                  tick={{ fontSize: 11 }}
-                  label={{
-                    value: 'FTE',
-                    angle: -90,
-                    position: 'insideLeft',
-                    offset: 10,
-                    style: { fontSize: 11 },
-                  }}
-                />
-                <RechartsTooltip formatter={(value) => [`${value} FTE`]} />
-                <Legend verticalAlign="top" />
-                <Bar dataKey="demand" name="Demand FTE" fill="#0078d4" />
-                <Bar dataKey="supply" name="Supply FTE" fill="#c7e0f4" />
-              </BarChart>
-            </div>
-          )}
-        </Card>
+      {/* Row 1: KPI Cards */}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <KpiCard
+          label="Active Demand"
+          value={`${Math.round(activeDemandFte * 10) / 10} FTE`}
+          sub="Approved + Allocated projects"
+        />
+        <KpiCard
+          label="Allocated"
+          value={`${Math.round(allocatedFte * 10) / 10} FTE`}
+          sub={`${allocatedPct}% of active demand`}
+          color={allocatedPct >= 80 ? tokens.colorPaletteGreenForeground1 : tokens.colorBrandForeground1}
+        />
+        <KpiCard
+          label="Needs Allocation"
+          value={String(needsAllocationLines.length)}
+          sub="Approved lines unassigned"
+          color={needsAllocationLines.length > 0 ? tokens.colorPaletteRedForeground3 : tokens.colorPaletteGreenForeground1}
+        />
+        <KpiCard
+          label="Over Capacity"
+          value={String(overCapacityCount)}
+          sub="Member × quarter at ≥ 1.0 FTE"
+          color={overCapacityCount > 0 ? tokens.colorPaletteRedForeground3 : tokens.colorPaletteGreenForeground1}
+        />
+      </div>
 
-        {/* ── Widget 2: Team Load by Quarter ── */}
-        <Card style={{ padding: tokens.spacingVerticalM, overflow: 'hidden' }}>
-          <Text size={500} weight="semibold" style={{ display: 'block', marginBottom: tokens.spacingVerticalS }}>
-            Team Load by Quarter
-          </Text>
-          <div style={{ overflowX: 'auto' }}>
-            <BarChart
-              width={480}
-              height={280}
-              data={teamLoadData}
-              margin={{ top: 8, right: 80, left: 0, bottom: 8 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="quarter" tick={{ fontSize: 12 }} />
-              <YAxis
-                tick={{ fontSize: 11 }}
-                label={{
-                  value: 'FTE',
-                  angle: -90,
-                  position: 'insideLeft',
-                  offset: 10,
-                  style: { fontSize: 11 },
-                }}
-              />
-              <RechartsTooltip
-                formatter={(value, memberId) => {
-                  const member = state.teamMembers.find((m) => m.id === memberId);
-                  return [`${value} FTE`, member ? member.name : String(memberId)];
-                }}
-              />
+      {/* Row 2: Charts */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
+        <WidgetCard title="Demand vs Supply by Skill">
+          {demandSupplyData.length === 0 ? (
+            <Text style={{ color: tokens.colorNeutralForeground3 }}>No data for selected theme.</Text>
+          ) : (
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={demandSupplyData} margin={{ top: 0, right: 8, left: 0, bottom: 48 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="skill" angle={-45} textAnchor="end" interval={0} tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <RechartsTooltip />
+                <Legend verticalAlign="top" />
+                <Bar dataKey="demand" fill="#0078d4" name="Demand FTE" radius={[2, 2, 0, 0]} />
+                <Bar dataKey="supply" fill="#a8d4f5" name="Available Supply" radius={[2, 2, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </WidgetCard>
+
+        <WidgetCard title="Team Load by Quarter">
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={teamLoadData} margin={{ top: 0, right: 8, left: 0, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="quarter" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <RechartsTooltip />
               <ReferenceLine
                 y={state.teamMembers.length}
                 stroke="#d13438"
-                strokeDasharray="4 2"
-                label={{
-                  value: `${state.teamMembers.length} (100% cap)`,
-                  position: 'right',
-                  fontSize: 10,
-                  fill: '#d13438',
-                }}
+                strokeDasharray="5 5"
+                label={{ value: 'Full capacity', position: 'insideTopRight', fontSize: 10, fill: '#d13438' }}
               />
-              {state.teamMembers.map((member, idx) => (
-                <Bar
-                  key={member.id}
-                  dataKey={member.id}
-                  name={member.name}
-                  stackId="load"
-                  fill={MEMBER_COLORS[idx % MEMBER_COLORS.length]}
-                />
+              {allocatedMemberNames.map((name, i) => (
+                <Bar key={name} dataKey={name} stackId="a" fill={MEMBER_COLORS[i % MEMBER_COLORS.length]} />
               ))}
             </BarChart>
-          </div>
-          <Text size={100} style={{ color: tokens.colorNeutralForeground3, display: 'block', marginTop: 4 }}>
-            Each segment = one team member's allocated FTE for the quarter.
-          </Text>
-        </Card>
+          </ResponsiveContainer>
+        </WidgetCard>
+      </div>
 
-        {/* ── Widget 3: Gaps Summary ── */}
-        <Card style={{ padding: tokens.spacingVerticalM }}>
-          <Text size={500} weight="semibold" style={{ display: 'block', marginBottom: tokens.spacingVerticalS }}>
-            Gaps Summary
-          </Text>
-          {gapLines.length === 0 ? (
+      {/* Row 3: Action tables */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
+        {/* Needs Allocation */}
+        <WidgetCard title="Needs Allocation">
+          {needsAllocationLines.length === 0 ? (
             <MessageBar intent="success">
-              <MessageBarBody>No resource gaps identified.</MessageBarBody>
+              <MessageBarBody>All approved demand lines are allocated or flagged.</MessageBarBody>
             </MessageBar>
           ) : (
             <div style={{ overflowX: 'auto' }}>
               <Table size="small">
                 <TableHeader>
                   <TableRow>
-                    <TableHeaderCell style={{ fontWeight: 600 }}>Project</TableHeaderCell>
-                    <TableHeaderCell style={{ fontWeight: 600 }}>Workstream</TableHeaderCell>
-                    <TableHeaderCell style={{ fontWeight: 600 }}>Skill</TableHeaderCell>
-                    <TableHeaderCell style={{ fontWeight: 600 }}>Required Level</TableHeaderCell>
-                    <TableHeaderCell style={{ fontWeight: 600 }}>FTE</TableHeaderCell>
-                    <TableHeaderCell style={{ fontWeight: 600 }}>Quarter</TableHeaderCell>
+                    <TableHeaderCell>Project</TableHeaderCell>
+                    <TableHeaderCell>Workstream</TableHeaderCell>
+                    <TableHeaderCell>Skill</TableHeaderCell>
+                    <TableHeaderCell>Level</TableHeaderCell>
+                    <TableHeaderCell>FTE</TableHeaderCell>
+                    <TableHeaderCell>Period</TableHeaderCell>
+                    <TableHeaderCell></TableHeaderCell>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {gapLines.map((dl) => {
+                  {needsAllocationLines.map((dl) => {
                     const skill = getSkillById(dl.skillId);
                     return (
-                      <TableRow key={`${dl.projectId}-${dl.id}`}>
+                      <TableRow key={dl.id}>
+                        <TableCell><Text size={200}>{dl.projectName}</Text></TableCell>
+                        <TableCell><Text size={200}>{dl.workstreamName}</Text></TableCell>
+                        <TableCell><Text size={200}>{skill?.id ?? dl.skillId}</Text></TableCell>
                         <TableCell>
-                          <Text size={300} weight="semibold">{dl.projectName}</Text>
+                          <Badge size="small" appearance="filled" color="informative">{dl.requiredLevel}</Badge>
                         </TableCell>
+                        <TableCell><Text size={200}>{dl.fte}</Text></TableCell>
                         <TableCell>
-                          <Text size={300}>{dl.workstreamName}</Text>
-                        </TableCell>
-                        <TableCell>
-                          <Text size={300}>{skill?.name ?? dl.skillId}</Text>
-                        </TableCell>
-                        <TableCell>
-                          <Badge appearance="filled" color="warning" size="small">
-                            {dl.requiredLevel}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Text size={300}>{dl.fte}</Text>
-                        </TableCell>
-                        <TableCell>
-                          <Text size={300}>
-                            {dl.startQuarter === dl.endQuarter
-                              ? dl.startQuarter
-                              : `${dl.startQuarter} – ${dl.endQuarter}`}
+                          <Text size={200}>
+                            {dl.startQuarter === dl.endQuarter ? dl.startQuarter : `${dl.startQuarter}–${dl.endQuarter}`}
                           </Text>
+                        </TableCell>
+                        <TableCell>
+                          <Button size="small" appearance="subtle" onClick={() => navigate(`/projects/${dl.projectId}`)}>
+                            Open →
+                          </Button>
                         </TableCell>
                       </TableRow>
                     );
@@ -356,148 +388,108 @@ export default function Dashboard() {
               </Table>
             </div>
           )}
-        </Card>
+        </WidgetCard>
 
-        {/* ── Widget 4: Skills Heatmap ── */}
-        <Card style={{ padding: tokens.spacingVerticalM }}>
-          <Text size={500} weight="semibold" style={{ display: 'block', marginBottom: tokens.spacingVerticalS }}>
-            Skills Heatmap (Demand FTE — Approved &amp; Allocated)
-          </Text>
-          {heatmapData.length === 0 ? (
-            <Text style={{ color: tokens.colorNeutralForeground3 }}>No skills to display.</Text>
+        {/* Resource Contention */}
+        <WidgetCard title="Resource Contention">
+          {contentionData.length === 0 ? (
+            <MessageBar intent="success">
+              <MessageBarBody>No resource contention detected for active projects.</MessageBarBody>
+            </MessageBar>
           ) : (
             <div style={{ overflowX: 'auto' }}>
               <Table size="small">
                 <TableHeader>
                   <TableRow>
-                    <TableHeaderCell style={{ fontWeight: 600, minWidth: 160 }}>Skill</TableHeaderCell>
-                    {QUARTER_ORDER.map((q) => (
-                      <TableHeaderCell key={q} style={{ fontWeight: 600, minWidth: 86, textAlign: 'center' }}>
-                        {q}
-                      </TableHeaderCell>
-                    ))}
+                    <TableHeaderCell>Skill</TableHeaderCell>
+                    <TableHeaderCell>Quarter</TableHeaderCell>
+                    <TableHeaderCell>Demand</TableHeaderCell>
+                    <TableHeaderCell>Supply</TableHeaderCell>
+                    <TableHeaderCell>Shortfall</TableHeaderCell>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {heatmapData.map((row) => {
-                    const skillId = row.skillId as string;
-                    const theme = getThemeForSkill(skillId);
-                    return (
-                      <TableRow key={skillId}>
-                        <TableCell>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <Badge appearance="outline" color="informative" size="small">
-                                {theme?.shortName ?? '—'}
-                              </Badge>
-                              <Text size={200} weight="semibold">{skillId}</Text>
-                            </div>
-                            <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>
-                              {row.skillName as string}
-                            </Text>
-                          </div>
-                        </TableCell>
-                        {QUARTER_ORDER.map((q) => {
-                          const fte = (row[q] as number) ?? 0;
-                          return (
-                            <TableCell
-                              key={q}
-                              style={{
-                                ...heatmapCellStyle(fte),
-                                textAlign: 'center',
-                                padding: '6px 8px',
-                              }}
-                            >
-                              <Text size={200}>{fte > 0 ? fte.toFixed(2) : '—'}</Text>
-                            </TableCell>
-                          );
-                        })}
-                      </TableRow>
-                    );
-                  })}
+                  {contentionData.map((row, i) => (
+                    <TableRow key={i}>
+                      <TableCell>
+                        <Text size={200} weight="semibold">{row.skill}</Text>
+                      </TableCell>
+                      <TableCell><Text size={200}>{row.quarter}</Text></TableCell>
+                      <TableCell><Text size={200}>{row.demand} FTE</Text></TableCell>
+                      <TableCell><Text size={200}>{row.supply} FTE</Text></TableCell>
+                      <TableCell>
+                        <Badge
+                          size="small"
+                          appearance="filled"
+                          color={row.shortfall >= 1.0 ? 'danger' : 'warning'}
+                        >
+                          -{row.shortfall} FTE
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
                 </TableBody>
               </Table>
-              {/* Heatmap color legend */}
-              <div style={{ display: 'flex', gap: tokens.spacingHorizontalM, flexWrap: 'wrap', marginTop: 8 }}>
-                {[
-                  { bg: '#ffffff', border: '1px solid #ccc', label: '0 FTE' },
-                  { bg: '#ddeeff', border: 'none', label: '0.01–0.5 FTE' },
-                  { bg: '#aaccff', border: 'none', label: '0.5–1.0 FTE' },
-                  { bg: '#5599dd', border: 'none', label: '> 1.0 FTE' },
-                ].map(({ bg, border, label }) => (
-                  <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                    <div
-                      style={{
-                        width: 14,
-                        height: 14,
-                        backgroundColor: bg,
-                        border: border || '1px solid #ccc',
-                        borderRadius: 3,
-                        flexShrink: 0,
-                      }}
-                    />
-                    <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>{label}</Text>
-                  </div>
-                ))}
-              </div>
             </div>
           )}
-        </Card>
-
-        {/* ── Widget 5: Funding Source Breakdown ── */}
-        <Card style={{ padding: tokens.spacingVerticalM }}>
-          <Text size={500} weight="semibold" style={{ display: 'block', marginBottom: tokens.spacingVerticalS }}>
-            Funding Source Breakdown
-          </Text>
-          {fundingData.length === 0 ? (
-            <Text style={{ color: tokens.colorNeutralForeground3 }}>No active demand to display.</Text>
-          ) : (
-            <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalXL, flexWrap: 'wrap' }}>
-              <PieChart width={260} height={260}>
-                <Pie
-                  data={fundingData}
-                  dataKey="value"
-                  nameKey="name"
-                  cx="50%"
-                  cy="50%"
-                  outerRadius={100}
-                  label={({ name, percent }: { name: string; percent: number }) =>
-                    `${name}: ${(percent * 100).toFixed(0)}%`
-                  }
-                >
-                  {fundingData.map((entry) => (
-                    <Cell key={entry.name} fill={fundingColors[entry.name] ?? '#888'} />
-                  ))}
-                </Pie>
-                <RechartsTooltip formatter={(value) => [`${value} FTE`]} />
-              </PieChart>
-
-              {/* Manual legend */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.spacingVerticalS }}>
-                {fundingData.map((entry) => (
-                  <div key={entry.name} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <div
-                      style={{
-                        width: 14,
-                        height: 14,
-                        backgroundColor: fundingColors[entry.name] ?? '#888',
-                        borderRadius: 3,
-                        flexShrink: 0,
-                      }}
-                    />
-                    <div style={{ display: 'flex', flexDirection: 'column' }}>
-                      <Text size={300} weight="semibold">{entry.name}</Text>
-                      <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
-                        {entry.value} FTE
-                      </Text>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </Card>
+        </WidgetCard>
       </div>
+
+      {/* Row 4: Skills Heatmap */}
+      <WidgetCard title="Skills Demand Heatmap (Active Projects)">
+        {heatmapData.length === 0 ? (
+          <Text style={{ color: tokens.colorNeutralForeground3 }}>No demand data for selected theme.</Text>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <Table size="small">
+              <TableHeader>
+                <TableRow>
+                  <TableHeaderCell style={{ minWidth: 80 }}>Skill</TableHeaderCell>
+                  {QUARTER_ORDER.map((q) => (
+                    <TableHeaderCell key={q} style={{ textAlign: 'center' }}>{q}</TableHeaderCell>
+                  ))}
+                  <TableHeaderCell style={{ textAlign: 'center', fontWeight: 'bold' }}>Total</TableHeaderCell>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {heatmapData.map((row) => (
+                  <TableRow key={row.skillId as string}>
+                    <TableCell>
+                      <Text size={200} weight="semibold">{row.skillId as string}</Text>
+                    </TableCell>
+                    {QUARTER_ORDER.map((q) => {
+                      const val = (row[q] as number) || 0;
+                      return (
+                        <TableCell
+                          key={q}
+                          style={{
+                            backgroundColor: heatmapBg(val),
+                            textAlign: 'center',
+                            color: val > 1.0 ? '#fff' : tokens.colorNeutralForeground1,
+                          }}
+                        >
+                          <Text size={200}>{val > 0 ? val : '—'}</Text>
+                        </TableCell>
+                      );
+                    })}
+                    <TableCell style={{ textAlign: 'center', backgroundColor: tokens.colorNeutralBackground3 }}>
+                      <Text size={200} weight="semibold">{row['total'] as number}</Text>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
+              {[['≤ 0.5 FTE', '#dbeeff'], ['≤ 1.0 FTE', '#9ac5f5'], ['> 1.0 FTE', '#0078d4']].map(([label, color]) => (
+                <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <div style={{ width: 12, height: 12, backgroundColor: color, borderRadius: 2 }} />
+                  <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>{label}</Text>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </WidgetCard>
     </div>
   );
 }

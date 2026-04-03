@@ -1,4 +1,5 @@
 import { Routes, Route } from 'react-router-dom';
+import { tokens } from '@fluentui/react-components';
 import { Sidebar } from './components/Sidebar';
 import Dashboard from './views/Dashboard';
 import { Projects } from './views/Projects';
@@ -15,7 +16,7 @@ export default function App() {
           flex: 1,
           overflowY: 'auto',
           padding: '24px',
-          backgroundColor: '#f5f5f5',
+          backgroundColor: tokens.colorNeutralBackground2,
         }}
       >
         <Routes>

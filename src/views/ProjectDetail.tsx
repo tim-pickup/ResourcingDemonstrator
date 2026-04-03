@@ -16,11 +16,14 @@ import {
   Text,
   tokens,
 } from '@fluentui/react-components';
+import { AddCircleRegular } from '@fluentui/react-icons';
 import { useAppContext } from '../context/AppContext';
-import { WorkflowStage, UserRole, DemandLine } from '../types';
+import { WorkflowStage, UserRole, DemandLine, Quarter } from '../types';
 import { WorkflowStepper } from '../components/WorkflowStepper';
 import { WorkstreamSection } from '../components/WorkstreamSection';
 import { AllocationPanel } from '../components/AllocationPanel';
+import { AddWorkstreamDialog } from '../components/AddWorkstreamDialog';
+import { AddDemandLineDialog } from '../components/AddDemandLineDialog';
 
 type StageBadgeColor = 'subtle' | 'warning' | 'success' | 'brand' | 'danger';
 type StageBadgeAppearance = 'outline' | 'filled';
@@ -47,6 +50,12 @@ interface AllocationTarget {
   demandLine: DemandLine;
 }
 
+interface AddDlTarget {
+  wsId: string;
+  startQ: Quarter;
+  endQ: Quarter;
+}
+
 export function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
   const { state, dispatch } = useAppContext();
@@ -54,6 +63,8 @@ export function ProjectDetail() {
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [allocationTarget, setAllocationTarget] = useState<AllocationTarget | null>(null);
+  const [showAddWorkstream, setShowAddWorkstream] = useState(false);
+  const [addDlTarget, setAddDlTarget] = useState<AddDlTarget | null>(null);
 
   const project = state.projects.find((p) => p.id === id);
 
@@ -69,6 +80,11 @@ export function ProjectDetail() {
 
   const totalFTE = project.workstreams.reduce(
     (sum, ws) => sum + ws.demandLines.reduce((s, dl) => s + dl.fte, 0),
+    0
+  );
+
+  const totalDemandLines = project.workstreams.reduce(
+    (sum, ws) => sum + ws.demandLines.length,
     0
   );
 
@@ -97,6 +113,8 @@ export function ProjectDetail() {
     setAllocationTarget({ workstreamId, demandLine: dl });
   }
 
+  const isDraftLead = project.stage === WorkflowStage.Draft && currentRole === UserRole.ProjectLead;
+
   return (
     <div style={{ padding: tokens.spacingVerticalL, display: 'flex', flexDirection: 'column', gap: tokens.spacingVerticalL }}>
       {/* 1. Workflow stepper */}
@@ -116,7 +134,7 @@ export function ProjectDetail() {
             }}
           >
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <Text size={600} weight="bold">{project.name}</Text>
+              <Text size={600} weight="semibold">{project.name}</Text>
               <Text size={300} style={{ color: tokens.colorNeutralForeground3 }}>
                 {project.code}
               </Text>
@@ -131,15 +149,29 @@ export function ProjectDetail() {
             {project.description}
           </Text>
 
-          {/* Stats */}
-          <div style={{ display: 'flex', gap: tokens.spacingHorizontalXL, flexWrap: 'wrap' }}>
+          {/* Stats grid — three stat items */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, auto)',
+              justifyContent: 'start',
+              gap: `${tokens.spacingVerticalXS} ${tokens.spacingHorizontalXL}`,
+              padding: `${tokens.spacingVerticalS} ${tokens.spacingHorizontalM}`,
+              background: tokens.colorNeutralBackground3,
+              borderRadius: tokens.borderRadiusMedium,
+            }}
+          >
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>Total FTE Demand</Text>
+              <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>Total FTE</Text>
               <Text size={400} weight="semibold">{totalFTE.toFixed(2)}</Text>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>Workstreams</Text>
               <Text size={400} weight="semibold">{project.workstreams.length}</Text>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>Demand Lines</Text>
+              <Text size={400} weight="semibold">{totalDemandLines}</Text>
             </div>
           </div>
 
@@ -177,16 +209,66 @@ export function ProjectDetail() {
 
       {/* 4. Workstream sections */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.spacingVerticalM }}>
-        <Text size={500} weight="semibold">Workstreams</Text>
-        {project.workstreams.map((ws) => (
-          <WorkstreamSection
-            key={ws.id}
-            workstream={ws}
-            projectStage={project.stage}
-            projectId={project.id}
-            onAllocate={handleAllocate}
-          />
-        ))}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: tokens.spacingHorizontalS }}>
+          <Text size={500} weight="semibold">Workstreams</Text>
+          {isDraftLead && (
+            <Button
+              appearance="outline"
+              onClick={() => setShowAddWorkstream(true)}
+            >
+              Add Workstream
+            </Button>
+          )}
+        </div>
+
+        {project.workstreams.length === 0 && isDraftLead ? (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: tokens.spacingVerticalS,
+              padding: `${tokens.spacingVerticalXL} ${tokens.spacingHorizontalL}`,
+              border: `1px dashed ${tokens.colorNeutralStroke2}`,
+              borderRadius: tokens.borderRadiusMedium,
+              color: tokens.colorNeutralForeground3,
+            }}
+          >
+            <Text size={300} style={{ color: tokens.colorNeutralForeground3 }}>
+              No workstreams yet.
+            </Text>
+            <Button
+              appearance="outline"
+              icon={<AddCircleRegular />}
+              onClick={() => setShowAddWorkstream(true)}
+            >
+              Add your first workstream
+            </Button>
+          </div>
+        ) : (
+          project.workstreams.map((ws) => (
+            <div key={ws.id}>
+              <WorkstreamSection
+                workstream={ws}
+                projectStage={project.stage}
+                projectId={project.id}
+                onAllocate={handleAllocate}
+              />
+              {isDraftLead && (
+                <div style={{ marginTop: 4, marginLeft: 16, marginBottom: 8 }}>
+                  <Button
+                    size="small"
+                    appearance="subtle"
+                    icon={<AddCircleRegular />}
+                    onClick={() => setAddDlTarget({ wsId: ws.id, startQ: ws.startQuarter, endQ: ws.endQuarter })}
+                  >
+                    Add demand line
+                  </Button>
+                </div>
+              )}
+            </div>
+          ))
+        )}
       </div>
 
       {/* Reject dialog */}
@@ -231,6 +313,25 @@ export function ProjectDetail() {
           workstreamId={allocationTarget.workstreamId}
           open={true}
           onClose={() => setAllocationTarget(null)}
+        />
+      )}
+
+      {/* Add Workstream dialog */}
+      <AddWorkstreamDialog
+        projectId={project.id}
+        open={showAddWorkstream}
+        onClose={() => setShowAddWorkstream(false)}
+      />
+
+      {/* Add Demand Line dialog */}
+      {addDlTarget && (
+        <AddDemandLineDialog
+          projectId={project.id}
+          workstreamId={addDlTarget.wsId}
+          workstreamStartQ={addDlTarget.startQ}
+          workstreamEndQ={addDlTarget.endQ}
+          open={true}
+          onClose={() => setAddDlTarget(null)}
         />
       )}
     </div>

@@ -2,15 +2,16 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Badge,
+  Button,
   Card,
-  CardHeader,
   Dropdown,
   Option,
   Text,
   tokens,
 } from '@fluentui/react-components';
 import { useAppContext } from '../context/AppContext';
-import { WorkflowStage } from '../types';
+import { UserRole, WorkflowStage } from '../types';
+import { NewProjectDialog } from '../components/NewProjectDialog';
 
 type StageBadgeColor = 'subtle' | 'warning' | 'success' | 'brand' | 'danger';
 type StageBadgeAppearance = 'outline' | 'filled';
@@ -38,6 +39,7 @@ export function Projects() {
   const { state } = useAppContext();
   const navigate = useNavigate();
   const [stageFilter, setStageFilter] = useState<string>('All');
+  const [showNewProject, setShowNewProject] = useState(false);
 
   const filteredProjects = stageFilter === 'All'
     ? state.projects
@@ -58,19 +60,27 @@ export function Projects() {
       >
         <Text size={700} weight="bold">Projects</Text>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalS }}>
-          <Text size={300}>Filter by stage:</Text>
-          <Dropdown
-            value={stageFilter}
-            selectedOptions={[stageFilter]}
-            onOptionSelect={(_e, data) => setStageFilter(data.optionValue ?? 'All')}
-            style={{ minWidth: 160 }}
-          >
-            <Option value="All">All</Option>
-            {ALL_STAGES.map((stage) => (
-              <Option key={stage} value={stage}>{stage}</Option>
-            ))}
-          </Dropdown>
+        <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalM }}>
+          {state.currentRole === UserRole.ProjectLead && (
+            <Button appearance="primary" onClick={() => setShowNewProject(true)}>
+              New Project
+            </Button>
+          )}
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalS }}>
+            <Text size={300}>Filter by stage:</Text>
+            <Dropdown
+              value={stageFilter}
+              selectedOptions={[stageFilter]}
+              onOptionSelect={(_e, data) => setStageFilter(data.optionValue ?? 'All')}
+              style={{ minWidth: 160 }}
+            >
+              <Option value="All">All</Option>
+              {ALL_STAGES.map((stage) => (
+                <Option key={stage} value={stage}>{stage}</Option>
+              ))}
+            </Dropdown>
+          </div>
         </div>
       </div>
 
@@ -99,6 +109,7 @@ export function Projects() {
                 key={project.id}
                 onClick={() => navigate(`/projects/${project.id}`)}
                 style={{
+                  position: 'relative',
                   cursor: 'pointer',
                   padding: tokens.spacingVerticalM,
                   display: 'flex',
@@ -109,50 +120,25 @@ export function Projects() {
                   transition: 'box-shadow 0.15s ease',
                 }}
               >
-                <CardHeader
-                  header={
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      <Text weight="bold" size={400}>{project.name}</Text>
-                      <Text
-                        size={200}
-                        style={{ color: tokens.colorNeutralForeground3 }}
-                      >
-                        {project.code}
-                      </Text>
-                    </div>
-                  }
-                  action={
-                    <Badge color={color} appearance={appearance}>
-                      {project.stage}
-                    </Badge>
-                  }
-                />
-
-                {/* Stats row */}
-                <div
-                  style={{
-                    display: 'flex',
-                    gap: tokens.spacingHorizontalL,
-                    paddingTop: tokens.spacingVerticalXS,
-                  }}
-                >
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>
-                      Workstreams
-                    </Text>
-                    <Text size={300} weight="semibold">
-                      {project.workstreams.length}
-                    </Text>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>
-                      Total FTE
-                    </Text>
-                    <Text size={300} weight="semibold">
-                      {totalFTE.toFixed(2)}
-                    </Text>
-                  </div>
+                {/* Stage badge — top-right absolute */}
+                <div style={{ position: 'absolute', top: 12, right: 12 }}>
+                  <Badge color={color} appearance={appearance}>
+                    {project.stage}
+                  </Badge>
                 </div>
+
+                {/* Name and code — leave right-side space for badge */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, paddingRight: 80 }}>
+                  <Text size={500} weight="semibold">{project.name}</Text>
+                  <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
+                    {project.code}
+                  </Text>
+                </div>
+
+                {/* Workstreams + FTE summary line */}
+                <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
+                  {project.workstreams.length} workstream{project.workstreams.length !== 1 ? 's' : ''} · {totalFTE.toFixed(1)} FTE total
+                </Text>
 
                 {/* Description — 2-line truncation */}
                 <Text
@@ -173,6 +159,15 @@ export function Projects() {
           })}
         </div>
       )}
+
+      <NewProjectDialog
+        open={showNewProject}
+        onClose={() => setShowNewProject(false)}
+        onCreated={(id) => {
+          setShowNewProject(false);
+          navigate(`/projects/${id}`);
+        }}
+      />
     </div>
   );
 }
